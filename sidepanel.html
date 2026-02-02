@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LinkedIn Connection Manager</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <h1 class="header__title">Connection Manager</h1>
+    <button id="btn-fetch" class="btn btn--primary">Fetch Connections</button>
+  </header>
+
+  <!-- Auth warning (hidden by default) -->
+  <div id="auth-warning" class="notice notice--warning" style="display:none;">
+    Please log into LinkedIn first, then click "Fetch Connections".
+  </div>
+
+  <!-- Fetch progress -->
+  <div id="fetch-progress" class="progress-section" style="display:none;">
+    <div class="progress-label">
+      Fetching connections: <span id="fetch-count">0</span> / <span id="fetch-total">?</span>
+    </div>
+    <div class="progress-bar">
+      <div id="fetch-bar" class="progress-bar__fill"></div>
+    </div>
+  </div>
+
+  <!-- Filters (hidden until connections loaded) -->
+  <div id="filters-section" class="filters" style="display:none;">
+    <div class="filter-row">
+      <label class="filter-label" for="filter-title">Job Title</label>
+      <input type="text" id="filter-title" class="filter-input" placeholder='e.g. "Recruiter" or "Sales"'>
+    </div>
+    <div class="filter-row">
+      <label class="filter-label" for="filter-keywords">Keywords</label>
+      <input type="text" id="filter-keywords" class="filter-input" placeholder="Comma-separated, e.g. marketing, SEO">
+    </div>
+    <div class="filter-row filter-row--toggle">
+      <label class="filter-label">Mode</label>
+      <div class="toggle-group">
+        <button id="mode-exclude" class="toggle-btn toggle-btn--active" data-mode="exclude">
+          Show Matches to Remove
+        </button>
+        <button id="mode-include" class="toggle-btn" data-mode="include">
+          Show Matches to Keep
+        </button>
+      </div>
+    </div>
+    <div class="filter-stats">
+      <span id="filter-match-count">0</span> of <span id="filter-total-count">0</span> connections match
+    </div>
+  </div>
+
+  <!-- Selection controls -->
+  <div id="selection-section" class="selection-controls" style="display:none;">
+    <div class="selection-info">
+      <span id="selected-count">0</span> selected
+    </div>
+    <div class="selection-buttons">
+      <button id="btn-select-all" class="btn btn--small">Select All Filtered</button>
+      <button id="btn-deselect-all" class="btn btn--small btn--ghost">Deselect All</button>
+    </div>
+  </div>
+
+  <!-- Connection list -->
+  <div id="connection-list" class="connection-list" style="display:none;">
+    <!-- Connection cards will be rendered here -->
+  </div>
+
+  <!-- Empty state for filtered results -->
+  <div id="empty-state" class="empty-state" style="display:none;">
+    No connections match your filters.
+  </div>
+
+  <!-- Action bar -->
+  <div id="action-bar" class="action-bar" style="display:none;">
+    <button id="btn-preview" class="btn btn--danger btn--large">
+      Preview Removal (<span id="preview-count">0</span>)
+    </button>
+  </div>
+
+  <!-- Confirmation modal -->
+  <div id="confirm-modal" class="modal-overlay" style="display:none;">
+    <div class="modal">
+      <h2 class="modal__title">Confirm Bulk Removal</h2>
+      <p class="modal__text">
+        You are about to remove <strong id="confirm-count">0</strong> connections.
+        This action cannot be undone.
+      </p>
+      <div id="confirm-list" class="modal__list">
+        <!-- Sample of names will appear here -->
+      </div>
+      <div class="modal__actions">
+        <button id="btn-confirm-cancel" class="btn btn--ghost">Cancel</button>
+        <button id="btn-confirm-remove" class="btn btn--danger">Remove Connections</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Removal progress -->
+  <div id="removal-progress" class="removal-section" style="display:none;">
+    <h2 class="removal-section__title">Removing Connections</h2>
+    <div class="progress-label">
+      <span id="remove-completed">0</span> / <span id="remove-total">0</span> removed
+    </div>
+    <div class="progress-bar">
+      <div id="remove-bar" class="progress-bar__fill progress-bar__fill--danger"></div>
+    </div>
+    <div id="remove-current" class="removal-current">Preparing...</div>
+    <div id="remove-status" class="removal-status"></div>
+    <div class="removal-controls">
+      <button id="btn-pause" class="btn btn--small">Pause</button>
+      <button id="btn-resume" class="btn btn--small btn--primary" style="display:none;">Resume</button>
+      <button id="btn-cancel-removal" class="btn btn--small btn--ghost">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Removal complete -->
+  <div id="removal-done" class="removal-done" style="display:none;">
+    <h2 class="removal-done__title">Removal Complete</h2>
+    <p id="removal-summary" class="removal-done__summary"></p>
+    <button id="btn-done" class="btn btn--primary">Done</button>
+  </div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>

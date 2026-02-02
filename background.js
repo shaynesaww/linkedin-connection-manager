@@ -441,36 +441,45 @@ async function fetchAllConnections(sendProgress) {
 async function tryRemovalStrategy(strategyNum, connection, headers) {
   const connectionUrn = connection.connectionUrn || '';
   const profileUrn = connection.entityUrn || '';
+  const publicId = connection.publicIdentifier || '';
 
   switch (strategyNum) {
     case 1: {
+      // profileActions disconnect endpoint (from linkedin-api Python library)
+      // POST /voyager/api/identity/profiles/{publicId}/profileActions?action=disconnect
+      if (!publicId) return null;
+      const url = `${BASE_URL}/voyager/api/identity/profiles/${encodeURIComponent(publicId)}/profileActions?action=disconnect`;
+      console.log(`${LOG} Strategy 1: POST ${url}`);
+      return fetch(url, { method: 'POST', headers });
+    }
+    case 2: {
+      // memberRelationships with connectionUrn field + decorationId (from Unipile docs)
+      // POST /voyager/api/relationships/dash/memberRelationships?action=removeFromMyConnections&decorationId=...
+      if (!connectionUrn) return null;
+      const url = `${REMOVE_ENDPOINT}&decorationId=com.linkedin.voyager.dash.deco.relationships.MemberRelationship-34`;
+      console.log(`${LOG} Strategy 2: POST ${url} body={connectionUrn: ${connectionUrn}}`);
+      return fetch(url, { method: 'POST', headers, body: JSON.stringify({ connectionUrn }) });
+    }
+    case 3: {
+      // memberRelationships with connectionUrn field (no decorationId)
+      if (!connectionUrn) return null;
+      console.log(`${LOG} Strategy 3: POST ${REMOVE_ENDPOINT} body={connectionUrn: ${connectionUrn}}`);
+      return fetch(REMOVE_ENDPOINT, { method: 'POST', headers, body: JSON.stringify({ connectionUrn }) });
+    }
+    case 4: {
       // POST action on the connection resource directly
       if (!connectionUrn || !connectionUrn.includes('fsd_connection')) return null;
       const encodedUrn = encodeURIComponent(connectionUrn);
       const url = `${BASE_URL}/voyager/api/relationships/dash/connections/${encodedUrn}?action=removeConnection`;
-      console.log(`${LOG} Strategy 1: POST ${url}`);
+      console.log(`${LOG} Strategy 4: POST ${url}`);
       return fetch(url, { method: 'POST', headers, body: '{}' });
     }
-    case 2: {
-      // POST memberRelationships with profile URN
-      if (!profileUrn) return null;
-      const url = REMOVE_ENDPOINT;
-      console.log(`${LOG} Strategy 2: POST ${url} with profileUrn=${profileUrn}`);
-      return fetch(url, { method: 'POST', headers, body: JSON.stringify({ invitee: profileUrn }) });
-    }
-    case 3: {
-      // POST memberRelationships with connection URN
-      if (!connectionUrn) return null;
-      const url = REMOVE_ENDPOINT;
-      console.log(`${LOG} Strategy 3: POST ${url} with connectionUrn=${connectionUrn}`);
-      return fetch(url, { method: 'POST', headers, body: JSON.stringify({ invitee: connectionUrn }) });
-    }
-    case 4: {
+    case 5: {
       // DELETE on the connection resource
       if (!connectionUrn) return null;
       const encodedUrn = encodeURIComponent(connectionUrn);
       const url = `${BASE_URL}/voyager/api/relationships/dash/connections/${encodedUrn}`;
-      console.log(`${LOG} Strategy 4: DELETE ${url}`);
+      console.log(`${LOG} Strategy 5: DELETE ${url}`);
       const deleteHeaders = { ...headers };
       delete deleteHeaders['content-type'];
       return fetch(url, { method: 'DELETE', headers: deleteHeaders });
@@ -487,10 +496,10 @@ async function removeConnection(connection) {
   const connectionUrn = connection.connectionUrn || '';
   const profileUrn = connection.entityUrn || '';
 
-  console.log(`${LOG} Attempting removal: connectionUrn=${connectionUrn}, profileUrn=${profileUrn}`);
+  console.log(`${LOG} Attempting removal: connectionUrn=${connectionUrn}, profileUrn=${profileUrn}, publicId=${connection.publicIdentifier || 'N/A'}`);
 
   // Order strategies: try cached working strategy first, then the rest
-  const allStrategies = [1, 2, 3, 4];
+  const allStrategies = [1, 2, 3, 4, 5];
   const strategies = workingRemovalStrategy
     ? [workingRemovalStrategy, ...allStrategies.filter(s => s !== workingRemovalStrategy)]
     : allStrategies;

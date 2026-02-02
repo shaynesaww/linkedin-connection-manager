@@ -62,6 +62,7 @@ const ENDPOINT_CONFIGS = [
 ];
 
 let workingConfig = null;
+let workingRemovalStrategy = null; // Cache which removal strategy works
 
 // ---- Rate Limiter State ----
 let isPaused = false;
@@ -437,21 +438,83 @@ async function fetchAllConnections(sendProgress) {
   return allConnections;
 }
 
-async function removeConnection(connectionUrn) {
+async function tryRemovalStrategy(strategyNum, connection, headers) {
+  const connectionUrn = connection.connectionUrn || '';
+  const profileUrn = connection.entityUrn || '';
+
+  switch (strategyNum) {
+    case 1: {
+      // POST action on the connection resource directly
+      if (!connectionUrn || !connectionUrn.includes('fsd_connection')) return null;
+      const encodedUrn = encodeURIComponent(connectionUrn);
+      const url = `${BASE_URL}/voyager/api/relationships/dash/connections/${encodedUrn}?action=removeConnection`;
+      console.log(`${LOG} Strategy 1: POST ${url}`);
+      return fetch(url, { method: 'POST', headers, body: '{}' });
+    }
+    case 2: {
+      // POST memberRelationships with profile URN
+      if (!profileUrn) return null;
+      const url = REMOVE_ENDPOINT;
+      console.log(`${LOG} Strategy 2: POST ${url} with profileUrn=${profileUrn}`);
+      return fetch(url, { method: 'POST', headers, body: JSON.stringify({ invitee: profileUrn }) });
+    }
+    case 3: {
+      // POST memberRelationships with connection URN
+      if (!connectionUrn) return null;
+      const url = REMOVE_ENDPOINT;
+      console.log(`${LOG} Strategy 3: POST ${url} with connectionUrn=${connectionUrn}`);
+      return fetch(url, { method: 'POST', headers, body: JSON.stringify({ invitee: connectionUrn }) });
+    }
+    case 4: {
+      // DELETE on the connection resource
+      if (!connectionUrn) return null;
+      const encodedUrn = encodeURIComponent(connectionUrn);
+      const url = `${BASE_URL}/voyager/api/relationships/dash/connections/${encodedUrn}`;
+      console.log(`${LOG} Strategy 4: DELETE ${url}`);
+      const deleteHeaders = { ...headers };
+      delete deleteHeaders['content-type'];
+      return fetch(url, { method: 'DELETE', headers: deleteHeaders });
+    }
+    default:
+      return null;
+  }
+}
+
+async function removeConnection(connection) {
   const headers = await getHeaders();
   headers['content-type'] = 'application/json';
 
-  const response = await fetch(REMOVE_ENDPOINT, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ invitee: connectionUrn }),
-  });
+  const connectionUrn = connection.connectionUrn || '';
+  const profileUrn = connection.entityUrn || '';
 
-  if (!response.ok) {
-    if (response.status === 429) throw new Error('RATE_LIMITED');
-    throw new Error(`Remove failed: ${response.status}`);
+  console.log(`${LOG} Attempting removal: connectionUrn=${connectionUrn}, profileUrn=${profileUrn}`);
+
+  // Order strategies: try cached working strategy first, then the rest
+  const allStrategies = [1, 2, 3, 4];
+  const strategies = workingRemovalStrategy
+    ? [workingRemovalStrategy, ...allStrategies.filter(s => s !== workingRemovalStrategy)]
+    : allStrategies;
+
+  for (const stratNum of strategies) {
+    try {
+      const resp = await tryRemovalStrategy(stratNum, connection, headers);
+      if (!resp) continue; // strategy not applicable
+
+      if (resp.ok || resp.status === 200 || resp.status === 204) {
+        console.log(`${LOG} Strategy ${stratNum} succeeded (${resp.status})`);
+        workingRemovalStrategy = stratNum;
+        return true;
+      }
+      if (resp.status === 429) throw new Error('RATE_LIMITED');
+      const body = await resp.text().catch(() => '');
+      console.log(`${LOG} Strategy ${stratNum} failed: ${resp.status} - ${body.substring(0, 500)}`);
+    } catch (err) {
+      if (err.message === 'RATE_LIMITED') throw err;
+      console.log(`${LOG} Strategy ${stratNum} error:`, err.message);
+    }
   }
-  return true;
+
+  throw new Error(`All removal strategies failed for ${connection.name || connectionUrn}`);
 }
 
 // ================================================================
@@ -511,7 +574,7 @@ async function bulkRemove(connections, sendProgress) {
     sendProgress(completed, connections.length, conn.name, 'removing');
 
     try {
-      await removeConnection(conn.connectionUrn);
+      await removeConnection(conn);
       completed++;
       sendProgress(completed, connections.length, conn.name, 'removed');
     } catch (err) {
@@ -520,7 +583,7 @@ async function bulkRemove(connections, sendProgress) {
         await sleep(RATE.backoff);
         if (!isCancelled) {
           try {
-            await removeConnection(conn.connectionUrn);
+            await removeConnection(conn);
             completed++;
             sendProgress(completed, connections.length, conn.name, 'removed');
           } catch (retryErr) {

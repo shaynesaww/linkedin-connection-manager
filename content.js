@@ -8,7 +8,8 @@
   // Guard: detect orphaned content scripts from a previous extension reload.
   try {
     if (!chrome.runtime?.id) return;
-  } catch {
+  } catch (err) {
+    console.log('[LCM-CS] Orphaned content script detected, exiting');
     return;
   }
 

@@ -4,10 +4,14 @@
  * intercepted by LinkedIn's page JavaScript or Service Worker.
  */
 
+importScripts('lib/logger.js');
+
 const BASE_URL = 'https://www.linkedin.com';
 const REMOVE_ENDPOINT = BASE_URL + '/voyager/api/relationships/dash/memberRelationships?action=removeFromMyConnections';
 const PAGE_SIZE = 40;
-const LOG = '[LCM-BG]';
+const DEFAULT_FETCH_TIMEOUT = 30000; // 30s for page fetches
+const REMOVAL_FETCH_TIMEOUT = 15000; // 15s for removal API calls
+const TAG = 'BG';
 
 // Endpoint configurations to try
 const ENDPOINT_CONFIGS = [
@@ -80,6 +84,30 @@ const RATE = {
 };
 
 // ================================================================
+// Fetch Timeout Wrapper
+// ================================================================
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_FETCH_TIMEOUT) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    return response;
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new Error(`FETCH_TIMEOUT: Request timed out after ${timeoutMs}ms - ${url.substring(0, 120)}`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+// ================================================================
 // Cookie & Auth Helpers
 // ================================================================
 
@@ -118,14 +146,14 @@ function parseConnectionsResponse(json) {
   const included = json.included || [];
   const elements = json.data?.elements || json.elements || json.data?.['*elements'] || [];
 
-  console.log(`${LOG} ${included.length} included entities, ${elements.length} elements`);
+  Logger.debug(TAG, `${included.length} included entities, ${elements.length} elements`);
 
   const types = new Set();
   for (const entity of included) {
     if (entity['$recipeType']) types.add('recipe:' + entity['$recipeType']);
     if (entity['$type']) types.add('type:' + entity['$type']);
   }
-  console.log(`${LOG} Entity types:`, [...types]);
+  Logger.debug(TAG, 'Entity types', [...types]);
 
   let connections = tryParseMiniProfiles(included);
   if (connections.length > 0) return connections;
@@ -137,9 +165,9 @@ function parseConnectionsResponse(json) {
   if (connections.length > 0) return connections;
 
   // Diagnostic dump
-  console.log(`${LOG} All parse strategies failed. First 3 entities:`);
+  Logger.warn(TAG, 'All parse strategies failed');
   for (let i = 0; i < Math.min(3, included.length); i++) {
-    console.log(`${LOG} Entity ${i}:`, JSON.stringify(included[i]).substring(0, 1000));
+    Logger.warn(TAG, `Entity ${i}`, JSON.stringify(included[i]).substring(0, 1000));
   }
   return [];
 }
@@ -173,7 +201,7 @@ function tryParseMiniProfiles(included) {
     }
   }
 
-  console.log(`${LOG} MiniProfile strategy: ${profiles.length} profiles, ${connectionEntities.length} connection entities`);
+  Logger.debug(TAG, `MiniProfile strategy: ${profiles.length} profiles, ${connectionEntities.length} connection entities`);
 
   for (const connEntity of connectionEntities) {
     const memberUrn = extractMemberUrn(connEntity);
@@ -187,7 +215,7 @@ function tryParseMiniProfiles(included) {
 
   const matched = profiles.filter(p => p.connectionUrn);
   if (matched.length === 0 && profiles.length > 0) {
-    console.log(`${LOG} No connectionUrn matches, using entityUrns as fallback`);
+    Logger.info(TAG, 'No connectionUrn matches, using entityUrns as fallback');
     return profiles.map(p => ({ ...p, connectionUrn: p.connectionUrn || p.entityUrn }));
   }
   return matched;
@@ -303,7 +331,10 @@ function extractProfilePicture(entity) {
     }
     if (typeof pictures === 'string') return pictures;
     return '';
-  } catch { return ''; }
+  } catch (err) {
+    Logger.debug(TAG, 'Failed to extract profile picture', { error: err.message });
+    return '';
+  }
 }
 
 // ================================================================
@@ -315,29 +346,26 @@ async function tryFetchWithConfig(config, start) {
   const url = `${config.url}?${params.toString()}`;
   const headers = await getHeaders();
 
-  console.log(`${LOG} Trying ${config.name}: ${url}`);
+  Logger.info(TAG, `API request: ${config.name}`, { url, start });
 
-  const response = await fetch(url, { method: 'GET', headers });
+  const response = await fetchWithTimeout(url, { method: 'GET', headers });
 
   if (!response.ok) {
-    console.log(`${LOG} ${config.name} returned ${response.status}`);
+    Logger.warn(TAG, `${config.name} returned ${response.status}`, { start });
     if (response.status === 429) throw new Error('RATE_LIMITED');
     return null;
   }
 
   const json = await response.json();
-  console.log(`${LOG} ${config.name} response keys:`, Object.keys(json));
-  if (json.included) console.log(`${LOG} ${json.included.length} included entities`);
-  if (json.data?.paging) console.log(`${LOG} paging:`, json.data.paging);
-  if (json.paging) console.log(`${LOG} paging:`, json.paging);
+  Logger.debug(TAG, `${config.name} response keys`, Object.keys(json));
+  if (json.included) Logger.debug(TAG, `${json.included.length} included entities`);
 
   // Extract total connection count from paging metadata.
   // IMPORTANT: paging.count is the PAGE SIZE, not the total. Only use paging.total.
   const paging = json.data?.paging || json.paging || {};
   const total = paging.total || 0;
 
-  console.log(`${LOG} Paging object:`, JSON.stringify(paging));
-  console.log(`${LOG} Reported total: ${total} (0 means not reported)`);
+  Logger.debug(TAG, 'Paging info', { total, count: paging.count, start: paging.start });
 
   const connections = parseConnectionsResponse(json);
 
@@ -349,31 +377,31 @@ async function discoverEndpoint() {
     try {
       const result = await tryFetchWithConfig(config, 0);
       if (result && (result.connections.length > 0 || result.total > 0)) {
-        console.log(`${LOG} Found working endpoint: ${config.name} (${result.connections.length} connections, total: ${result.total})`);
+        Logger.info(TAG, `Working endpoint found: ${config.name}`, { connections: result.connections.length, total: result.total });
         workingConfig = config;
         return result;
       }
       if (result) {
-        console.log(`${LOG} ${config.name}: valid response but 0 connections`);
-        console.log(`${LOG} Raw (first 2000):`, JSON.stringify(result.json).substring(0, 2000));
+        Logger.info(TAG, `${config.name}: valid response but 0 connections`);
+        Logger.debug(TAG, 'Raw response (truncated)', JSON.stringify(result.json).substring(0, 2000));
       }
     } catch (err) {
       if (err.message === 'RATE_LIMITED') throw err;
-      console.log(`${LOG} ${config.name} failed:`, err.message);
+      Logger.warn(TAG, `${config.name} failed`, { error: err.message });
     }
   }
-  throw new Error('No working LinkedIn API endpoint found. Check the background service worker console for [LCM-BG] logs.');
+  throw new Error('No working LinkedIn API endpoint found. Open the Logs panel for details.');
 }
 
 async function fetchAllConnections(sendProgress) {
-  console.log(`${LOG} Starting connection fetch...`);
+  Logger.info(TAG, 'Starting connection fetch');
 
   const firstPage = await discoverEndpoint();
   const allConnections = [...firstPage.connections];
   // Use reported total if available, otherwise estimate high and paginate until empty
   let total = firstPage.total > 0 ? firstPage.total : 10000;
 
-  console.log(`${LOG} First page: ${firstPage.connections.length} connections, reported total: ${firstPage.total}, using total: ${total}`);
+  Logger.info(TAG, 'First page loaded', { connections: firstPage.connections.length, reportedTotal: firstPage.total, usingTotal: total });
   sendProgress(allConnections.length, total);
 
   // If the first page returned fewer results than requested, there might only be one page
@@ -389,7 +417,7 @@ async function fetchAllConnections(sendProgress) {
     try {
       const result = await tryFetchWithConfig(workingConfig, start);
       if (!result) {
-        console.log(`${LOG} Null result at start=${start}, stopping`);
+        Logger.warn(TAG, 'Null result, stopping pagination', { start });
         break;
       }
 
@@ -413,34 +441,38 @@ async function fetchAllConnections(sendProgress) {
       if (pageCount === 0) {
         consecutiveEmpty++;
         if (consecutiveEmpty >= 2) {
-          console.log(`${LOG} Two consecutive empty pages at start=${start}, stopping`);
+          Logger.info(TAG, 'Two consecutive empty pages, stopping', { start });
           break;
         }
       } else {
         consecutiveEmpty = 0;
       }
 
-      console.log(`${LOG} Page at start=${start - PAGE_SIZE}: parsed ${pageCount} connections, total so far: ${allConnections.length}`);
+      Logger.debug(TAG, `Page fetched`, { start: start - PAGE_SIZE, pageCount, totalSoFar: allConnections.length });
 
       await sleep(300 + Math.random() * 200);
     } catch (err) {
       if (err.message === 'RATE_LIMITED') {
-        console.log(`${LOG} Rate limited at start=${start}, waiting 30s`);
+        Logger.warn(TAG, 'Rate limited during fetch, waiting 30s', { start });
         await sleep(30000);
         continue;
       }
-      console.error(`${LOG} Error at start=${start}:`, err);
+      if (err.message.startsWith('FETCH_TIMEOUT')) {
+        Logger.error(TAG, 'Fetch timed out', { start, error: err.message });
+        await sleep(5000);
+        continue;
+      }
+      Logger.error(TAG, 'Error during fetch page', { start, error: err.message });
       break;
     }
   }
 
-  console.log(`${LOG} Fetch complete: ${allConnections.length} connections`);
+  Logger.info(TAG, 'Fetch complete', { total: allConnections.length });
   return allConnections;
 }
 
 async function tryRemovalStrategy(strategyNum, connection, headers) {
   const connectionUrn = connection.connectionUrn || '';
-  const profileUrn = connection.entityUrn || '';
   const publicId = connection.publicIdentifier || '';
 
   switch (strategyNum) {
@@ -449,40 +481,40 @@ async function tryRemovalStrategy(strategyNum, connection, headers) {
       // POST /voyager/api/identity/profiles/{publicId}/profileActions?action=disconnect
       if (!publicId) return null;
       const url = `${BASE_URL}/voyager/api/identity/profiles/${encodeURIComponent(publicId)}/profileActions?action=disconnect`;
-      console.log(`${LOG} Strategy 1: POST ${url}`);
-      return fetch(url, { method: 'POST', headers });
+      Logger.debug(TAG, `Strategy 1: POST profileActions/disconnect`, { publicId });
+      return fetchWithTimeout(url, { method: 'POST', headers }, REMOVAL_FETCH_TIMEOUT);
     }
     case 2: {
       // memberRelationships with connectionUrn field + decorationId (from Unipile docs)
       // POST /voyager/api/relationships/dash/memberRelationships?action=removeFromMyConnections&decorationId=...
       if (!connectionUrn) return null;
       const url = `${REMOVE_ENDPOINT}&decorationId=com.linkedin.voyager.dash.deco.relationships.MemberRelationship-34`;
-      console.log(`${LOG} Strategy 2: POST ${url} body={connectionUrn: ${connectionUrn}}`);
-      return fetch(url, { method: 'POST', headers, body: JSON.stringify({ connectionUrn }) });
+      Logger.debug(TAG, `Strategy 2: POST memberRelationships+decorationId`, { connectionUrn });
+      return fetchWithTimeout(url, { method: 'POST', headers, body: JSON.stringify({ connectionUrn }) }, REMOVAL_FETCH_TIMEOUT);
     }
     case 3: {
       // memberRelationships with connectionUrn field (no decorationId)
       if (!connectionUrn) return null;
-      console.log(`${LOG} Strategy 3: POST ${REMOVE_ENDPOINT} body={connectionUrn: ${connectionUrn}}`);
-      return fetch(REMOVE_ENDPOINT, { method: 'POST', headers, body: JSON.stringify({ connectionUrn }) });
+      Logger.debug(TAG, `Strategy 3: POST memberRelationships`, { connectionUrn });
+      return fetchWithTimeout(REMOVE_ENDPOINT, { method: 'POST', headers, body: JSON.stringify({ connectionUrn }) }, REMOVAL_FETCH_TIMEOUT);
     }
     case 4: {
       // POST action on the connection resource directly
       if (!connectionUrn || !connectionUrn.includes('fsd_connection')) return null;
       const encodedUrn = encodeURIComponent(connectionUrn);
       const url = `${BASE_URL}/voyager/api/relationships/dash/connections/${encodedUrn}?action=removeConnection`;
-      console.log(`${LOG} Strategy 4: POST ${url}`);
-      return fetch(url, { method: 'POST', headers, body: '{}' });
+      Logger.debug(TAG, `Strategy 4: POST connections/removeConnection`, { connectionUrn });
+      return fetchWithTimeout(url, { method: 'POST', headers, body: '{}' }, REMOVAL_FETCH_TIMEOUT);
     }
     case 5: {
       // DELETE on the connection resource
       if (!connectionUrn) return null;
       const encodedUrn = encodeURIComponent(connectionUrn);
       const url = `${BASE_URL}/voyager/api/relationships/dash/connections/${encodedUrn}`;
-      console.log(`${LOG} Strategy 5: DELETE ${url}`);
+      Logger.debug(TAG, `Strategy 5: DELETE connection`, { connectionUrn });
       const deleteHeaders = { ...headers };
       delete deleteHeaders['content-type'];
-      return fetch(url, { method: 'DELETE', headers: deleteHeaders });
+      return fetchWithTimeout(url, { method: 'DELETE', headers: deleteHeaders }, REMOVAL_FETCH_TIMEOUT);
     }
     default:
       return null;
@@ -496,7 +528,7 @@ async function removeConnection(connection) {
   const connectionUrn = connection.connectionUrn || '';
   const profileUrn = connection.entityUrn || '';
 
-  console.log(`${LOG} Attempting removal: connectionUrn=${connectionUrn}, profileUrn=${profileUrn}, publicId=${connection.publicIdentifier || 'N/A'}`);
+  Logger.info(TAG, `Attempting removal: ${connection.name || 'unknown'}`, { connectionUrn, profileUrn, publicId: connection.publicIdentifier || 'N/A' });
 
   // Order strategies: try cached working strategy first, then the rest
   const allStrategies = [1, 2, 3, 4, 5];
@@ -510,16 +542,16 @@ async function removeConnection(connection) {
       if (!resp) continue; // strategy not applicable
 
       if (resp.ok || resp.status === 200 || resp.status === 204) {
-        console.log(`${LOG} Strategy ${stratNum} succeeded (${resp.status})`);
+        Logger.info(TAG, `Removal succeeded via strategy ${stratNum}`, { name: connection.name, status: resp.status });
         workingRemovalStrategy = stratNum;
         return true;
       }
       if (resp.status === 429) throw new Error('RATE_LIMITED');
       const body = await resp.text().catch(() => '');
-      console.log(`${LOG} Strategy ${stratNum} failed: ${resp.status} - ${body.substring(0, 500)}`);
+      Logger.warn(TAG, `Strategy ${stratNum} failed`, { status: resp.status, body: body.substring(0, 500) });
     } catch (err) {
       if (err.message === 'RATE_LIMITED') throw err;
-      console.log(`${LOG} Strategy ${stratNum} error:`, err.message);
+      Logger.warn(TAG, `Strategy ${stratNum} error`, { error: err.message });
     }
   }
 
@@ -567,15 +599,19 @@ async function bulkRemove(connections, sendProgress) {
   let completed = 0;
   const failed = [];
 
+  Logger.info(TAG, 'Starting bulk removal', { count: connections.length });
+
   for (let i = 0; i < connections.length; i++) {
     if (isCancelled) {
       sendProgress(completed, connections.length, null, 'cancelled');
+      Logger.info(TAG, 'Bulk removal cancelled', { completed, failed: failed.length });
       return { completed, failed, cancelled: true };
     }
 
     await waitWhilePaused();
     if (isCancelled) {
       sendProgress(completed, connections.length, null, 'cancelled');
+      Logger.info(TAG, 'Bulk removal cancelled', { completed, failed: failed.length });
       return { completed, failed, cancelled: true };
     }
 
@@ -589,6 +625,7 @@ async function bulkRemove(connections, sendProgress) {
     } catch (err) {
       if (err.message === 'RATE_LIMITED') {
         sendProgress(completed, connections.length, conn.name, 'rate_limited');
+        Logger.warn(TAG, 'Rate limited during removal, backing off', { completed, name: conn.name });
         await sleep(RATE.backoff);
         if (!isCancelled) {
           try {
@@ -598,11 +635,13 @@ async function bulkRemove(connections, sendProgress) {
           } catch (retryErr) {
             failed.push({ item: conn, error: retryErr.message });
             sendProgress(completed, connections.length, conn.name, 'failed');
+            Logger.error(TAG, 'Removal failed after retry', { name: conn.name, error: retryErr.message });
           }
         }
       } else {
         failed.push({ item: conn, error: err.message });
         sendProgress(completed, connections.length, conn.name, 'failed');
+        Logger.error(TAG, 'Removal failed', { name: conn.name, error: err.message });
       }
     }
 
@@ -617,6 +656,7 @@ async function bulkRemove(connections, sendProgress) {
   }
 
   sendProgress(completed, connections.length, null, 'done');
+  Logger.info(TAG, 'Bulk removal complete', { completed, failed: failed.length });
   return { completed, failed, cancelled: false };
 }
 
@@ -631,7 +671,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'checkAuth':
       getCsrfToken()
         .then(() => sendResponse({ authenticated: true }))
-        .catch(() => sendResponse({ authenticated: false }));
+        .catch(err => {
+          Logger.info(TAG, 'Auth check failed', { error: err.message });
+          sendResponse({ authenticated: false });
+        });
       return true;
 
     case 'fetchAllConnections':
@@ -639,7 +682,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         chrome.runtime.sendMessage({
           action: 'fetchProgress',
           payload: { fetched, total },
-        }).catch(() => {});
+        }).catch(err => Logger.debug(TAG, 'Progress message not delivered', { error: err.message }));
       })
         .then(connections => sendResponse({ connections }))
         .catch(err => sendResponse({ error: err.message }));
@@ -650,7 +693,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         chrome.runtime.sendMessage({
           action: 'removeProgress',
           payload: { completed, total, currentItem, status },
-        }).catch(() => {});
+        }).catch(err => Logger.debug(TAG, 'Remove progress not delivered', { error: err.message }));
       })
         .then(result => sendResponse(result))
         .catch(err => sendResponse({ error: err.message }));
@@ -658,12 +701,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'pauseRemoval':
       isPaused = true;
+      Logger.info(TAG, 'Removal paused');
       sendResponse({ success: true });
       return false;
 
     case 'resumeRemoval':
       isPaused = false;
       if (pauseResolve) { pauseResolve(); pauseResolve = null; }
+      Logger.info(TAG, 'Removal resumed');
       sendResponse({ success: true });
       return false;
 
@@ -671,8 +716,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       isCancelled = true;
       isPaused = false;
       if (pauseResolve) { pauseResolve(); pauseResolve = null; }
+      Logger.info(TAG, 'Removal cancelled by user');
       sendResponse({ success: true });
       return false;
+
+    case 'getLogs':
+      Logger.getLogs(payload || {})
+        .then(logs => sendResponse({ logs }))
+        .catch(err => sendResponse({ error: err.message }));
+      return true;
+
+    case 'clearLogs':
+      Logger.clearLogs()
+        .then(() => sendResponse({ success: true }))
+        .catch(err => sendResponse({ error: err.message }));
+      return true;
+
+    case 'setLogLevel':
+      Logger.setLevel(payload.level)
+        .then(() => sendResponse({ success: true }))
+        .catch(err => sendResponse({ error: err.message }));
+      return true;
 
     default:
       return false;
@@ -693,4 +757,6 @@ chrome.action.onClicked.addListener(async (tab) => {
 
 chrome.sidePanel.setOptions({ enabled: true });
 
-console.log(`${LOG} Service worker loaded.`);
+Logger.init().then(() => {
+  Logger.info(TAG, 'Service worker loaded');
+});

@@ -533,4 +533,82 @@
   function getSelectedConnections() {
     return allConnections.filter(c => selectedUrns.has(c.connectionUrn));
   }
+
+  // ---- Log Viewer ----
+
+  const btnLogs = $('btn-logs');
+  const logViewer = $('log-viewer');
+  const logLevelFilter = $('log-level-filter');
+  const logEntries = $('log-entries');
+  const btnRefreshLogs = $('btn-refresh-logs');
+  const btnClearLogs = $('btn-clear-logs');
+  const btnCopyLogs = $('btn-copy-logs');
+  const btnCloseLogs = $('btn-close-logs');
+
+  async function loadLogs() {
+    const level = logLevelFilter.value;
+    try {
+      const logs = await Logger.getLogs({ level });
+
+      if (logs.length === 0) {
+        logEntries.innerHTML = '<div class="log-entry">No log entries.</div>';
+        return;
+      }
+
+      // Render entries newest first
+      logEntries.innerHTML = logs.slice().reverse().map(entry => {
+        const d = new Date(entry.ts);
+        const date = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        const time = d.toLocaleTimeString('en-US', {
+          hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'
+        });
+        const dataStr = entry.data ? ` | ${escapeHtml(String(entry.data))}` : '';
+        return `<div class="log-entry log-entry--${entry.level}">` +
+          `<span class="log-entry__time">${date} ${time}</span>` +
+          `<span class="log-entry__level">${entry.level}</span>` +
+          `<span class="log-entry__tag">[${entry.tag}]</span>` +
+          `${escapeHtml(entry.msg)}` +
+          `${dataStr ? `<span class="log-entry__data">${dataStr}</span>` : ''}` +
+          `</div>`;
+      }).join('');
+
+      logEntries.scrollTop = 0;
+    } catch (err) {
+      logEntries.innerHTML = `<div class="log-entry log-entry--ERROR">Failed to load logs: ${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  btnLogs.addEventListener('click', () => {
+    logViewer.style.display = 'flex';
+    loadLogs();
+  });
+
+  btnCloseLogs.addEventListener('click', () => {
+    logViewer.style.display = 'none';
+  });
+
+  btnRefreshLogs.addEventListener('click', loadLogs);
+  logLevelFilter.addEventListener('change', loadLogs);
+
+  btnClearLogs.addEventListener('click', async () => {
+    if (confirm('Clear all log entries?')) {
+      await Logger.clearLogs();
+      loadLogs();
+    }
+  });
+
+  btnCopyLogs.addEventListener('click', async () => {
+    try {
+      const logs = await Logger.getLogs({ level: 'DEBUG' });
+      const text = logs.map(e => {
+        const ts = new Date(e.ts).toISOString();
+        return `${ts} [${e.level}] [${e.tag}] ${e.msg}${e.data ? ' | ' + e.data : ''}`;
+      }).join('\n');
+      await navigator.clipboard.writeText(text);
+      btnCopyLogs.textContent = 'Copied!';
+      setTimeout(() => { btnCopyLogs.textContent = 'Copy'; }, 2000);
+    } catch (err) {
+      alert('Failed to copy: ' + err.message);
+    }
+  });
 })();

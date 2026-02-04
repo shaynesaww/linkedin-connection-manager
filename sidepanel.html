@@ -10,7 +10,10 @@
   <!-- Header -->
   <header class="header">
     <h1 class="header__title">Connection Manager</h1>
-    <button id="btn-fetch" class="btn btn--primary">Fetch Connections</button>
+    <div class="header__actions">
+      <button id="btn-logs" class="btn btn--small btn--ghost" title="View Logs">Logs</button>
+      <button id="btn-fetch" class="btn btn--primary">Fetch Connections</button>
+    </div>
   </header>
 
   <!-- Auth warning (hidden by default) -->
@@ -125,6 +128,27 @@
     <button id="btn-done" class="btn btn--primary">Done</button>
   </div>
 
+  <!-- Log Viewer -->
+  <div id="log-viewer" class="log-viewer" style="display:none;">
+    <div class="log-viewer__header">
+      <h2 class="log-viewer__title">Activity Log</h2>
+      <div class="log-viewer__controls">
+        <select id="log-level-filter" class="log-viewer__select">
+          <option value="DEBUG">All</option>
+          <option value="INFO" selected>Info+</option>
+          <option value="WARN">Warnings+</option>
+          <option value="ERROR">Errors Only</option>
+        </select>
+        <button id="btn-refresh-logs" class="btn btn--small">Refresh</button>
+        <button id="btn-clear-logs" class="btn btn--small btn--ghost">Clear</button>
+        <button id="btn-copy-logs" class="btn btn--small btn--ghost">Copy</button>
+        <button id="btn-close-logs" class="btn btn--small btn--ghost">Close</button>
+      </div>
+    </div>
+    <div id="log-entries" class="log-viewer__entries"></div>
+  </div>
+
+  <script src="lib/logger.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

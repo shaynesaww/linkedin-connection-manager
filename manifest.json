@@ -6,7 +6,8 @@
   "permissions": [
     "sidePanel",
     "activeTab",
-    "cookies"
+    "cookies",
+    "storage"
   ],
   "host_permissions": [
     "https://www.linkedin.com/*"
